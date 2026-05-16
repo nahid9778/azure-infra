@@ -213,7 +213,11 @@ stages:
 # =========================================================
 - stage: Approval
   dependsOn: Plan
-
+  pool:
+   name: InfraPool
+   demands:
+   - Infra -equals Infrapipeline
+   
   jobs:
   - deployment: ApprovalGate
 
