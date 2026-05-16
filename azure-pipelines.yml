@@ -4,7 +4,11 @@ trigger:
 - main
 - features/*
 
-pool: InfraPool
+# =========================================================
+# DEFAULT AGENT POOL
+# =========================================================
+pool:
+  name: InfraPool
 
 stages:
 
@@ -20,6 +24,8 @@ stages:
 
     steps:
 
+    - checkout: self
+
     # -----------------------------------------------------
     # Terraform Install
     # -----------------------------------------------------
@@ -29,16 +35,15 @@ stages:
         terraformVersion: 'latest'
 
     # -----------------------------------------------------
-    # Terraform Provider Cache
+    # Restore Terraform Cache
     # -----------------------------------------------------
     - task: Cache@2
-      displayName: Cache Terraform Providers
+      displayName: Restore Terraform Cache
       inputs:
         key: 'terraform | "$(Agent.OS)" | environment/dev/.terraform.lock.hcl'
         restoreKeys: |
           terraform | "$(Agent.OS)"
         path: '$(System.DefaultWorkingDirectory)/environment/dev/.terraform'
-        cacheHitVar: 'TF_CACHE_RESTORED'
 
     # -----------------------------------------------------
     # Terraform Init
@@ -52,7 +57,7 @@ stages:
         backendServiceArm: 'Service-connection-007'
         backendAzureRmStorageAccountName: 'storagebackend007'
         backendAzureRmContainerName: 'tfstate'
-        backendAzureRmKey: 'terraform.tfstate'
+        backendAzureRmKey: 'dev.tfstate'
 
     # -----------------------------------------------------
     # Terraform Validate
@@ -93,6 +98,9 @@ stages:
     displayName: TFSec Scanning
 
     steps:
+
+    - checkout: self
+
     - task: tfsec@1
       displayName: TF Sec Scan
       inputs:
@@ -103,25 +111,25 @@ stages:
   # -----------------------------------------------------
   - job: TfLint_Job
     displayName: Tflint Scanning
+    dependsOn: TFSecScanning
 
     steps:
 
     - checkout: self
 
     # -----------------------------------------------------
-    # TFLINT CACHE
+    # Restore TFLint Cache
     # -----------------------------------------------------
     - task: Cache@2
-      displayName: Cache TFLint
+      displayName: Restore TFLint Cache
       inputs:
         key: 'tflint | "$(Agent.OS)"'
         restoreKeys: |
           tflint | "$(Agent.OS)"
         path: '$(USERPROFILE)'
-        cacheHitVar: 'TFLINT_CACHE_RESTORED'
 
     # -----------------------------------------------------
-    # Download TFLint only if not exists
+    # Download TFLint
     # -----------------------------------------------------
     - powershell: |
         if (-Not (Test-Path "$env:USERPROFILE\tflint.exe")) {
@@ -156,10 +164,12 @@ stages:
   displayName: Plan & Review
 
   jobs:
-  - job: TerraofrmPlan
+  - job: TerraformPlan
     displayName: Terraform Plan
 
     steps:
+
+    - checkout: self
 
     # -----------------------------------------------------
     # Restore Terraform Cache
@@ -184,13 +194,13 @@ stages:
         backendServiceArm: 'Service-connection-007'
         backendAzureRmStorageAccountName: 'storagebackend007'
         backendAzureRmContainerName: 'tfstate'
-        backendAzureRmKey: 'terraform.tfstate'
+        backendAzureRmKey: 'dev.tfstate'
 
     # -----------------------------------------------------
     # Download tfvars
     # -----------------------------------------------------
     - task: DownloadSecureFile@1
-      displayName: terraformtfvars
+      displayName: Download tfvars
       name: terraformtfvars
       inputs:
         secureFile: 'terraform.tfvars'
@@ -209,68 +219,99 @@ stages:
 
 
 # =========================================================
-# APPROVAL & APPLY STAGE
+# APPROVAL STAGE
 # =========================================================
 - stage: Approval
+  displayName: Manual Approval
   dependsOn: Plan
-  pool:
-   name: InfraPool
-   demands:
-   - Infra -equals Infrapipeline
-   
+
   jobs:
   - deployment: ApprovalGate
+
+    displayName: Approval Gate
 
     environment: approval gate
 
     strategy:
       runOnce:
         deploy:
-
           steps:
 
-          # -------------------------------------------------
-          # Restore Terraform Cache
-          # -------------------------------------------------
-          - task: Cache@2
-            displayName: Restore Terraform Cache
-            inputs:
-              key: 'terraform | "$(Agent.OS)" | environment/dev/.terraform.lock.hcl'
-              restoreKeys: |
-                terraform | "$(Agent.OS)"
-              path: '$(System.DefaultWorkingDirectory)/environment/dev/.terraform'
+          - powershell: |
+              Write-Host "Manual Approval Completed Successfully"
+            displayName: Approval Success
 
-          # -------------------------------------------------
-          # Terraform Init
-          # -------------------------------------------------
-          - task: TerraformTask@5
-            displayName: Terraform Init
-            inputs:
-              provider: 'azurerm'
-              command: 'init'
-              workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
-              backendServiceArm: 'Service-connection-007'
-              backendAzureRmStorageAccountName: 'storagebackend007'
-              backendAzureRmContainerName: 'tfstate'
-              backendAzureRmKey: 'terraform.tfstate'
 
-          # -------------------------------------------------
-          # Download tfvars
-          # -------------------------------------------------
-          - task: DownloadSecureFile@1
-            displayName: terraformtfvars
-            name: terraformtfvars
-            inputs:
-              secureFile: 'terraform.tfvars'
+# =========================================================
+# DEPLOY STAGE
+# =========================================================
+- stage: Deploy
+  displayName: Terraform Apply
+  dependsOn: Approval
 
-          # -------------------------------------------------
-          # Terraform Apply
-          # -------------------------------------------------
-          - task: TerraformTask@5
-            displayName: Terraform Apply
-            inputs:
-              provider: 'azurerm'
-              command: 'apply'
-              workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
-              commandOptions: '-var-file=$(terraformtfvars.securefilepath)'
-              environmentServiceNameAzureRM: 'Service-connection-007'
+  jobs:
+  - job: TerraformApply
+
+    displayName: Terraform Apply
+
+    # =====================================================
+    # SECOND AGENT ONLY FOR APPLY
+    # =====================================================
+    pool:
+      name: InfraPool
+      demands:
+        - Infra -equals Infrapipeline
+
+    steps:
+
+    # -----------------------------------------------------
+    # IMPORTANT
+    # NEW AGENT NEEDS CHECKOUT
+    # -----------------------------------------------------
+    - checkout: self
+
+    # -----------------------------------------------------
+    # Restore Terraform Cache
+    # -----------------------------------------------------
+    - task: Cache@2
+      displayName: Restore Terraform Cache
+      inputs:
+        key: 'terraform | "$(Agent.OS)" | environment/dev/.terraform.lock.hcl'
+        restoreKeys: |
+          terraform | "$(Agent.OS)"
+        path: '$(System.DefaultWorkingDirectory)/environment/dev/.terraform'
+
+    # -----------------------------------------------------
+    # Terraform Init
+    # -----------------------------------------------------
+    - task: TerraformTask@5
+      displayName: Terraform Init
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        backendServiceArm: 'Service-connection-007'
+        backendAzureRmStorageAccountName: 'storagebackend007'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'dev.tfstate'
+
+    # -----------------------------------------------------
+    # Download tfvars
+    # -----------------------------------------------------
+    - task: DownloadSecureFile@1
+      displayName: Download tfvars
+      name: terraformtfvars
+      inputs:
+        secureFile: 'terraform.tfvars'
+
+    # -----------------------------------------------------
+    # Terraform Apply
+    # -----------------------------------------------------
+    - task: TerraformTask@5
+      displayName: Terraform Apply
+      inputs:
+        provider: 'azurerm'
+        command: 'apply'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        commandOptions: '-auto-approve -var-file=$(terraformtfvars.securefilepath)'
+        environmentServiceNameAzureRM: 'Service-connection-007'
