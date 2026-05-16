@@ -9,6 +9,7 @@ module "stgs" {
 }
 module "vnets" {
   source = "../../module/Networking/azurerm_virtual_network"
+  depends_on = [ module.rgs ]
   vnets  = var.vnets
 }
 module "nics" {
