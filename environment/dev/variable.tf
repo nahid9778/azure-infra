@@ -1,3 +1,5 @@
+variable "subscription" {}
+
 variable "rgs" {
   type = map(object({
     rg_name    = string
