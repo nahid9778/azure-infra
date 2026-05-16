@@ -1,0 +1,137 @@
+name: Infra
+
+trigger:
+- main
+- features/*
+
+pool: InfraPool
+
+stages:
+- stage: PreCommit
+  displayName: Pre Commit
+  jobs:
+  - job: Terraform_PreCheck
+    displayName: Terraform Init Validate
+    steps:
+    - task: TerraformInstaller@1
+      displayName: Terraform Installer
+      inputs:
+        terraformVersion: 'latest'
+    - task: TerraformTask@5
+      displayName: Terraform Init
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        backendServiceArm: 'Service-connection-007'
+        backendAzureRmStorageAccountName: 'storagebackend007'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'terraform.tfstate'
+    - task: TerraformTask@5
+      displayName: Terraform Validate
+      inputs:
+        provider: 'azurerm'
+        command: 'validate'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+    - task: TerraformTask@5
+      displayName: Terraform Fmt
+      inputs:
+        provider: 'azurerm'
+        command: 'custom'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        outputTo: 'console'
+        customCommand: 'fmt'
+        environmentServiceNameAzureRM: 'Service-connection-007'
+- stage: Scanning
+  displayName: Scanning
+  jobs:
+  - job: TFSecScanning
+    displayName: TFSec Scanning
+    steps:
+    - task: tfsec@1
+      displayName: TF Sec Scan
+      inputs:
+        version: 'v1.26.0'
+        
+  - job: TfLint_Job
+    displayName: Tflint Scanning
+    steps:
+    - checkout: self
+    - powershell: |
+        Remove-Item "$env:USERPROFILE\tflint.exe" -Force -ErrorAction SilentlyContinue
+        Remove-Item "$env:USERPROFILE\tflint.zip" -Force -ErrorAction SilentlyContinue
+        Invoke-WebRequest -Uri "https://github.com/terraform-linters/tflint/releases/latest/download/tflint_windows_amd64.zip" -OutFile "$env:USERPROFILE\tflint.zip"
+        Expand-Archive -Path "$env:USERPROFILE\tflint.zip" -DestinationPath "$env:USERPROFILE" -Force
+        Remove-Item "$env:USERPROFILE\tflint.zip"
+      displayName: "Download and Setup TFLint"
+
+    - powershell: |
+        & "$env:USERPROFILE\tflint.exe" --version
+        & "$env:USERPROFILE\tflint.exe" 
+      displayName: "Execute TFLint"
+      workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+      continueOnError: true
+- stage: Plan
+  displayName: Plan & Review
+  jobs:
+  - job: TerraofrmPlan
+    displayName: Terraform Plan
+    steps:
+    - task: TerraformTask@5
+      displayName: Terraform Init
+      inputs:
+        provider: 'azurerm'
+        command: 'init'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        backendServiceArm: 'Service-connection-007'
+        backendAzureRmStorageAccountName: 'storagebackend007'
+        backendAzureRmContainerName: 'tfstate'
+        backendAzureRmKey: 'terraform.tfstate'
+    - task: DownloadSecureFile@1
+      displayName: terraformtfvars
+      name: terraformtfvars
+      inputs:
+        secureFile: 'terraform.tfvars'
+    - task: TerraformTask@5
+      displayName: Terraform Plan
+      inputs:
+        provider: 'azurerm'
+        command: 'plan'
+        workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+        commandOptions: '-var-file=$(terraformtfvars.securefilepath)'
+        environmentServiceNameAzureRM: 'Service-connection-007'
+- stage: Approval
+  dependsOn: Plan
+  jobs:
+    - deployment: ApprovalGate
+      environment: approval gate
+      strategy: 
+       runOnce:
+         deploy:
+           steps:
+            - task: TerraformTask@5
+              displayName: Terraform Init
+              inputs:
+                provider: 'azurerm'
+                command: 'init'
+                workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+                backendServiceArm: 'Service-connection-007'
+                backendAzureRmStorageAccountName: 'storagebackend007'
+                backendAzureRmContainerName: 'tfstate'
+                backendAzureRmKey: 'terraform.tfstate'
+            - task: DownloadSecureFile@1
+              displayName: terraformtfvars
+              name: terraformtfvars
+              inputs:
+                secureFile: 'terraform.tfvars'
+            
+            - task: TerraformTask@5
+              displayName: Terraform Apply
+              inputs:
+                provider: 'azurerm'
+                command: 'apply'
+                workingDirectory: '$(System.DefaultWorkingDirectory)/environment/dev'
+                commandOptions: '-var-file=$(terraformtfvars.securefilepath)'
+                environmentServiceNameAzureRM: 'Service-connection-007'
+
+
